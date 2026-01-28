@@ -1,0 +1,2 @@
+[console_scripts]
+slogger = slogger.cli:main

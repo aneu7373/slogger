@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: slogger
+Version: 0.1.0
+Summary: SLOGGER - deterministic site-saturation mutagenesis pipeline with FROGGER-compatible fragment + Golden Gate outputs.
+Requires-Python: >=3.11
+Requires-Dist: biopython>=1.83
+Requires-Dist: PyYAML>=6.0
+Requires-Dist: openpyxl>=3.1
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
