@@ -1,0 +1,20 @@
+[project]
+name = "slogger"
+version = "0.1.0"
+description = "SLOGGER - deterministic site-saturation mutagenesis pipeline with FROGGER-compatible fragment + Golden Gate outputs."
+requires-python = ">=3.11"
+dependencies = [
+  "biopython>=1.83",
+  "PyYAML>=6.0",
+  "openpyxl>=3.1",
+]
+
+[project.scripts]
+slogger = "slogger.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
