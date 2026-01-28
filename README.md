@@ -1,86 +1,93 @@
 # SLOGGER
-**S**aturation **L**ibraries, **G**olden-Gate **E**xcision **R**eady
 
-SLOGGER is a deterministic site-saturation mutagenesis design pipeline that:
-- runs **codonopt** to generate a baseline codon-optimized CDS per gene
-- generates a complete saturation library (WT + 19 substitutions) at every amino-acid position
-- **always** splits variants into fragments using FROGGER-compatible cut points
-- **always** adds Golden Gate adapters (output-only)
-- validates constructs using FROGGER-compatible post-ligation ORF checks
+**Saturation Libraries, Golden-Gate Excision Ready**
 
-## Repo setup (with codonopt as submodule)
+SLOGGER is a deterministic, Dockerized pipeline for generating site-saturation mutagenesis libraries from protein or coding sequences and producing Golden Gate-ready DNA fragments. It is designed for reproducibility, auditability, and tight integration with codon optimization and cloning workflows.
 
-From the repo root:
+SLOGGER generates exhaustive single-site amino-acid substitution libraries (including wild type), validates post-ligation ORFs, and outputs fragment FASTAs suitable for direct ordering or downstream assembly.
+
+---
+
+## Key Features
+
+- Full site-saturation mutagenesis
+  - Every amino acid position
+  - All 20 amino acids (WT + 19 substitutions)
+  - Deterministic ordering and outputs
+- Codon optimization first
+  - Uses `codonopt` as the baseline DNA generator
+  - Same codon tables, constraints, and optimization modes
+  - Codon selection at mutation sites respects forbidden motifs
+- Golden Gate-ready outputs
+  - User-defined fragment cut points
+  - User-supplied adapters
+  - Fragment FASTA is the primary output
+- Strict post-ligation validation
+  - Translation correctness
+  - Length multiple of 3
+  - No internal stop codons
+  - GC bounds and homopolymer limits
+  - Forbidden motif detection with context
+- Deterministic and auditable
+  - Fixed seeds
+  - Stable variant ordering
+  - Complete TSV report of all variants and failures
+- Dockerized
+  - No conda
+  - Reproducible builds
+  - Designed for HPC and workstation use
+
+---
+
+## What SLOGGER Produces
+
+For each input gene, SLOGGER outputs:
+
+- `baseline_optimized.fasta`  
+  Codon-optimized baseline CDS (one per gene)
+- `variants.fasta`  
+  Full-length variant CDS sequences (adapter-free)
+- `variants_protein.fasta`  
+  Protein sequences corresponding to each variant
+- `fragments_with_gg.fasta` (primary output)  
+  Golden Gate-ready fragments with adapters
+- `reassembled_orfs.fasta`  
+  Adapter-free post-ligation ORFs used for validation
+- `report.tsv`  
+  Variant-level audit table (pass/fail, GC, motifs, etc.)
+- `junction_hits.tsv`  
+  Detailed forbidden-motif hit locations with sequence context
+
+---
+
+## Installation
+
+### Clone with submodules
+
+SLOGGER depends on `codonopt`, which is included as a git submodule.
 
 ```bash
-git init
-git add .
-git commit -m "Initial SLOGGER scaffold"
+git clone --recurse-submodules https://github.com/YOUR-USERNAME/slogger.git
+cd slogger
+```
 
-# Add codonopt as a submodule (same pattern as FROGGER)
-git submodule add <YOUR_CODONOPT_GIT_URL> third_party/codonopt
+If you already cloned without submodules:
+
+```bash
 git submodule update --init --recursive
-
-git commit -m "Add codonopt submodule"
 ```
 
-> Replace `<YOUR_CODONOPT_GIT_URL>` with the URL for your codonopt repository.
+---
 
-## Local install (dev)
+## Docker (Recommended)
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-
-# install codonopt editable (from submodule)
-pip install -e third_party/codonopt
-
-# install slogger editable
-pip install -e ".[dev]"
-
-pytest -q
-```
-
-## Running SLOGGER
-
-SLOGGER takes a FROGGER-compatible YAML config (see `FROGGER.schema.md` for the contract). At minimum you need:
-- `inputs.fasta`
-- `codonopt` block (sequence or batch_table, codon_table, etc.)
-- `splits` cut points
-- `golden_gate.fragments` adapters
-
-Example:
-```bash
-slogger run config.yaml --outdir out/
-```
-
-Outputs (typical):
-- `out/baseline_optimized.fasta`
-- `out/variants.fasta`
-- `out/variants_protein.fasta`
-- `out/fragments_with_gg.fasta`
-- `out/reassembled_orfs.fasta`
-- `out/report.tsv`
-- `out/junction_hits.tsv`
-
-## Docker build & run
-
-### Build (important: include submodules)
-If you cloned the repo, ensure submodules are present:
-
-```bash
-git submodule update --init --recursive
-```
-
-Then build:
+### Build
 
 ```bash
 docker build -t slogger:0.1 .
 ```
 
 ### Run
-Mount your config + inputs into the container:
 
 ```bash
 docker run --rm \
@@ -90,12 +97,107 @@ docker run --rm \
   run config.yaml --outdir out
 ```
 
-## Ensuring codonopt integration matches FROGGER
+All outputs will be written to `out/`.
 
-SLOGGER runs codonopt via:
+---
 
-```text
-python -m codonopt ...
+## Configuration
+
+SLOGGER is driven by a single YAML config file.
+
+### Minimal Example
+
+```yaml
+pipeline_version: "0.1"
+
+inputs:
+  fasta: inputs.fasta
+  input_type: protein
+
+codonopt:
+  sequence: inputs.fasta
+  codon_table: codon_table.xlsx
+  codon_table_sheet: Ecoli
+  out_subdir: codonopt_out
+  gc_min: 0.35
+  gc_max: 0.65
+  max_homopolymer: 5
+  seed: 1337
+
+splits:
+  global_cut_points: [300, 600]
+  enforce_frame: true
+
+golden_gate:
+  fragments:
+    - left_adapter: GGTCTC
+      right_adapter: GAGACC
+    - left_adapter: GGTCTC
+      right_adapter: GAGACC
+    - left_adapter: GGTCTC
+      right_adapter: GAGACC
+
+final_checks:
+  require_no_internal_stops: true
+  require_length_multiple_of_3: true
+
+outputs:
+  fragments_fasta: fragments_with_gg.fasta
+  reassembled_fasta: reassembled_orfs.fasta
+  report_tsv: report.tsv
 ```
 
-The YAML keys used to build the command come from `codonopt` in your config. If your codonopt CLI flags differ from what SLOGGER assumes, update `src/slogger/pipeline.py::run_codonopt()` to match the exact invocation used by FROGGER.
+---
+
+## Mutation Model
+
+- Single-site saturation only
+- One position mutated at a time
+- WT amino acid is included explicitly
+- Codons at mutated sites are selected deterministically:
+  1. Highest-frequency codon for the target amino acid
+  2. If that introduces a forbidden motif, the next-best synonymous codon is tried
+- No random sampling is performed
+
+---
+
+## Fragmentation and Adapters
+
+- Fragment cut points are 0-based nucleotide indices
+- Frame enforcement is optional
+- Adapter sequences are trusted verbatim
+- Validation is performed on the adapter-free reassembled ORF
+
+---
+
+## Determinism and Reproducibility
+
+Given the same:
+- input FASTA
+- YAML config
+- codon table
+- codonopt commit
+
+SLOGGER will always produce identical outputs.
+
+---
+
+## Development (Optional)
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+pytest
+```
+
+---
+
+## When to Use SLOGGER
+
+SLOGGER is ideal when you want:
+- Complete saturation mutagenesis libraries
+- Codon-optimized, synthesis-ready designs
+- Golden Gate cloning outputs
+- Full traceability and validation
+- Deterministic, repeatable builds
