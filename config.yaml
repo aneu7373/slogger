@@ -1,0 +1,77 @@
+pipeline_version: "0.3"
+
+inputs:
+  fasta: strep_protease.fasta
+  input_type: cds
+
+library_mode:
+  type: fragment_single_mutation
+  max_fragments: 8
+
+# Full suite of mutations is the default:
+# - all positions
+# - all 20 amino acids
+# - WT included
+# So we intentionally omit the `mutation:` block here.
+
+codonopt:
+  enable: true
+  sequence: strep_protease.fasta
+  codon_table: Ecoli.xlsx
+  codon_table_sheet: Ecoli1
+  out_subdir: codonopt_out
+
+  # Avoid TAG and restriction sites in the ORF (adapter-free).
+  # BsaI:  GGTCTC / GAGACC
+  # BbsI:  GAAGAC / GTCTTC
+  # BsmBI: CGTCTC / GAGACG
+  avoid_motifs:
+    CTCAAA
+
+  # Optional constraints (sane defaults)
+  gc_min: 0.3
+  gc_max: 0.7
+  max_homopolymer: 5
+  seed: 1337
+  n: 1
+
+splits:
+  # Cut the gene at AA133 and AA266
+  # nt cut points = 3*133=399 and 3*266=798 (0-based nucleotide indices)
+  global_cut_points: [399, 798]
+  enforce_frame: true
+
+golden_gate:
+  # Literal adapters are concatenated as: left_adapter + core_seq + right_adapter
+  # Using BsmBI sites in the adapters, plus the requested 4-nt overhangs.
+  fragments:
+    # Fragment 1: ATCC (left) and TATG (right)
+    - left_adapter: CGTCTCATCC
+      right_adapter: TATGGAGACG
+
+    # Fragment 2: GGAA (left) and TTCC (right)
+    - left_adapter: CGTCTCGGAA
+      right_adapter: TTCCGAGACG
+
+    # Fragment 3: GAGC (left) and GTCC (right)
+    - left_adapter: CGTCTCGAGC
+      right_adapter: GTCCGAGACG
+
+final_checks:
+  require_no_internal_stops: true
+  require_length_multiple_of_3: true
+
+# Post-ligation motif bans (adapter-free ORF). Keep same as codonopt avoids.
+final_forbidden:
+  motifs:
+    CTCAAA
+
+outputs:
+  wt_fragments_fasta: wt_fragments_with_gg.fasta
+  mut_fragments_fasta: mut_fragments_with_gg.fasta
+  pools_dir: pools
+  assembly_plan_tsv: assembly_plan.tsv
+
+  reassembled_fasta: reassembled_orfs.fasta
+  report_tsv: report.tsv
+  junction_hits_tsv: junction_hits.tsv

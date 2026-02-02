@@ -2,27 +2,21 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 
 AA_ORDER = "ACDEFGHIKLMNPQRSTVWY"
 AA_SET = set(AA_ORDER)
 
-# Standard genetic code (DNA codons)
 CODON_TO_AA = {
-    # Phenylalanine / Leucine
     "TTT": "F", "TTC": "F", "TTA": "L", "TTG": "L",
     "CTT": "L", "CTC": "L", "CTA": "L", "CTG": "L",
-    # Isoleucine / Methionine
     "ATT": "I", "ATC": "I", "ATA": "I", "ATG": "M",
-    # Valine
     "GTT": "V", "GTC": "V", "GTA": "V", "GTG": "V",
-    # Serine / Proline / Threonine / Alanine
     "TCT": "S", "TCC": "S", "TCA": "S", "TCG": "S",
     "CCT": "P", "CCC": "P", "CCA": "P", "CCG": "P",
     "ACT": "T", "ACC": "T", "ACA": "T", "ACG": "T",
     "GCT": "A", "GCC": "A", "GCA": "A", "GCG": "A",
-    # Tyrosine / Histidine / Glutamine / Asparagine / Lysine / Aspartate / Glutamate
     "TAT": "Y", "TAC": "Y",
     "CAT": "H", "CAC": "H",
     "CAA": "Q", "CAG": "Q",
@@ -30,12 +24,10 @@ CODON_TO_AA = {
     "AAA": "K", "AAG": "K",
     "GAT": "D", "GAC": "D",
     "GAA": "E", "GAG": "E",
-    # Cysteine / Tryptophan / Arginine / Glycine
     "TGT": "C", "TGC": "C", "TGG": "W",
     "CGT": "R", "CGC": "R", "CGA": "R", "CGG": "R",
     "AGT": "S", "AGC": "S", "AGA": "R", "AGG": "R",
     "GGT": "G", "GGC": "G", "GGA": "G", "GGG": "G",
-    # Stops
     "TAA": "*", "TAG": "*", "TGA": "*",
 }
 
@@ -48,8 +40,8 @@ class Variant:
     pos1: int
     wt_aa: str
     target_aa: str
-    mutation_label: str  # e.g. A123V or A123A
-    codon_used: str      # codon inserted at mutated site, or "WT"
+    mutation_label: str
+    codon_used: str
     protein: str
     cds: str
 
@@ -81,22 +73,99 @@ def _contains_any_motif(seq: str, motifs: Sequence[str]) -> bool:
     return False
 
 
-def _codon_choices_for_aa(
-    target_aa: str,
-    codon_table: Dict[str, List[Tuple[str, float]]],
-) -> List[str]:
+def _as_list_of_codon_freq_pairs(x: Any) -> List[Tuple[str, float]]:
     """
-    codon_table expected shape:
-      {"A": [("GCT", 0.35), ("GCC", 0.28), ...], "R": [...], ...}
-    Sorted high->low frequency preferred.
+    Normalize various codon table representations to List[(codon, freq)].
+    Accepted inputs:
+      - List[(codon, freq)]
+      - List[codon]  -> freq assumed 0.0
+      - Dict[codon, freq]
+    """
+    if x is None:
+        return []
+    if isinstance(x, dict):
+        out = []
+        for cod, freq in x.items():
+            out.append((str(cod), float(freq)))
+        # sort high->low
+        out.sort(key=lambda t: t[1], reverse=True)
+        return out
+    if isinstance(x, list):
+        if not x:
+            return []
+        if isinstance(x[0], tuple) and len(x[0]) == 2:
+            return [(str(c), float(f)) for (c, f) in x]
+        # list of codons
+        return [(str(c), 0.0) for c in x]
+    return []
+
+
+def _get_codon_pairs_for_aa(codon_table: Any, aa: str) -> List[Tuple[str, float]]:
+    """
+    Supports:
+      1) dict-like: codon_table[aa] -> list[(codon,freq)] or other representations
+      2) object with method get_codons(aa) or codons_for_aa(aa)
+      3) object with mapping attribute aa_to_codons or table
+    """
+    aa = aa.upper()
+
+    # dict-like (including defaultdict etc.)
+    try:
+        val = codon_table[aa]  # type: ignore[index]
+        pairs = _as_list_of_codon_freq_pairs(val)
+        if pairs:
+            return pairs
+    except Exception:
+        pass
+
+    # method patterns
+    for meth_name in ("get_codons", "codons_for_aa", "get_for_aa"):
+        if hasattr(codon_table, meth_name):
+            meth = getattr(codon_table, meth_name)
+            try:
+                val = meth(aa)
+                pairs = _as_list_of_codon_freq_pairs(val)
+                if pairs:
+                    return pairs
+            except Exception:
+                pass
+
+    # attribute patterns
+    for attr in ("aa_to_codons", "table", "mapping"):
+        if hasattr(codon_table, attr):
+            m = getattr(codon_table, attr)
+            try:
+                val = m[aa]
+                pairs = _as_list_of_codon_freq_pairs(val)
+                if pairs:
+                    return pairs
+            except Exception:
+                pass
+
+    # If we reach here, we need to know how CodonTable is structured
+    raise TypeError(
+        "Unsupported codon_table type for mutation codon selection. "
+        f"type={type(codon_table)}. Expected dict-like mapping or CodonTable exposing "
+        "one of: __getitem__[aa], get_codons(aa), codons_for_aa(aa), aa_to_codons[aa], table[aa]. "
+        f"Available attrs: {sorted([a for a in dir(codon_table) if not a.startswith('_')])}"
+    )
+
+
+def _codon_choices_for_aa(target_aa: str, codon_table: Any) -> List[str]:
+    """
+    Returns codons in preferred order (highest frequency first).
     """
     aa = target_aa.upper()
-    if aa not in codon_table or not codon_table[aa]:
-        raise ValueError(f"No codon choices provided for amino acid '{aa}' in codon_table.")
-    out: List[str] = []
-    for cod, _freq in codon_table[aa]:
-        out.append(_normalize_dna(cod))
-    # de-dup while preserving order
+    if aa not in AA_SET:
+        raise ValueError(f"Invalid amino acid '{aa}' for codon selection.")
+
+    pairs = _get_codon_pairs_for_aa(codon_table, aa)
+    if not pairs:
+        raise ValueError(f"No codon choices found for amino acid '{aa}' in codon_table.")
+
+    out = [_normalize_dna(cod) for cod, _freq in pairs]
+
+    # de-dup preserve order
     seen = set()
     uniq = []
     for c in out:
@@ -111,14 +180,8 @@ def choose_mutation_codon(
     codon_index0: int,
     target_aa: str,
     forbidden_motifs: Sequence[str],
-    codon_table: Dict[str, List[Tuple[str, float]]],
+    codon_table: Any,
 ) -> Tuple[str, str]:
-    """
-    Choose the highest-frequency codon for target_aa unless it introduces a forbidden motif.
-    Deterministically tries synonymous codons in descending frequency order.
-
-    Returns: (codon_used, mutated_cds)
-    """
     baseline_cds = _normalize_dna(baseline_cds)
     start = 3 * codon_index0
     end = start + 3
@@ -131,17 +194,12 @@ def choose_mutation_codon(
         if not _contains_any_motif(candidate, forbidden_motifs):
             return codon, candidate
 
-    # If none work, return the top choice but let downstream validation flag it.
     top = choices[0]
     candidate = baseline_cds[:start] + top + baseline_cds[end:]
     return top, candidate
 
 
 def parse_explicit_mutation_string(mut: str) -> Tuple[str, int, str]:
-    """
-    Parse a mutation string like 'T24V' into (wt_aa, pos1, target_aa).
-    Allows lowercase input. Validates AAs are in the standard 20.
-    """
     m = MUT_RE.match(mut.strip())
     if not m:
         raise ValueError(f"Invalid mutation string '{mut}'. Expected format like 'T24V'.")
@@ -165,16 +223,10 @@ def generate_saturation_variants(
     gene_id: str,
     baseline_cds: str,
     forbidden_motifs: Sequence[str],
-    codon_table: Dict[str, List[Tuple[str, float]]],
+    codon_table: Any,
     include_wt: bool = True,
-    positions_to_mutate: Optional[Sequence[int]] = None,  # 1-based AA indices
+    positions_to_mutate: Optional[Sequence[int]] = None,
 ) -> Iterable[Variant]:
-    """
-    Generate exhaustive single-site saturation variants across requested AA positions.
-    Default: all positions.
-
-    Includes WT per position (e.g., A123A) if include_wt=True.
-    """
     baseline_cds = _normalize_dna(baseline_cds)
     baseline_prot = translate_cds(baseline_cds)
 
@@ -184,7 +236,6 @@ def generate_saturation_variants(
     else:
         positions = list(positions_to_mutate)
 
-    # Validate positions
     for p in positions:
         if p < 1 or p > aa_len:
             raise ValueError(f"Requested mutation position {p} outside protein length {aa_len} for {gene_id}.")
@@ -235,22 +286,14 @@ def generate_explicit_variants(
     gene_id: str,
     baseline_cds: str,
     forbidden_motifs: Sequence[str],
-    codon_table: Dict[str, List[Tuple[str, float]]],
-    explicit_mutations: Sequence[str],  # strings like "T24V"
+    codon_table: Any,
+    explicit_mutations: Sequence[str],
     require_wt_match: bool = True,
 ) -> Iterable[Variant]:
-    """
-    Generate exactly the variants specified in explicit_mutations.
-
-    - If require_wt_match=True, we verify the WT letter matches the baseline protein at that position.
-      This prevents off-by-one and wrong-sequence mistakes.
-    - WT entries are allowed (e.g. T24T) and will yield the baseline CDS unchanged.
-    """
     baseline_cds = _normalize_dna(baseline_cds)
     baseline_prot = translate_cds(baseline_cds)
     aa_len = len(baseline_prot)
 
-    # de-dup while preserving order
     seen = set()
     muts: List[str] = []
     for m in explicit_mutations:
@@ -273,7 +316,6 @@ def generate_explicit_variants(
 
         codon_index0 = pos1 - 1
 
-        # WT "mutation"
         if tgt == baseline_wt:
             mut_label = f"{baseline_wt}{pos1}{baseline_wt}"
             yield Variant(
